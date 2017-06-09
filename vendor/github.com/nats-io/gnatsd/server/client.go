@@ -192,8 +192,8 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 	c.bw = bufio.NewWriterSize(c.nc, startBufSize)
 	c.subs = make(map[string]*subscription)
-	c.debug = (atomic.LoadInt32(&debug) != 0)
-	c.trace = (atomic.LoadInt32(&trace) != 0)
+	c.debug = (atomic.LoadInt32(&c.srv.logging.debug) != 0)
+	c.trace = (atomic.LoadInt32(&c.srv.logging.trace) != 0)
 
 	// This is a scratch buffer used for processMsg()
 	// The msg header starts with "MSG ",
@@ -266,6 +266,9 @@ func (c *client) readLoop() {
 	// Start read buffer.
 	b := make([]byte, startBufSize)
 
+	// Snapshot server options.
+	opts := s.getOpts()
+
 	for {
 		n, err := nc.Read(b)
 		if err != nil {
@@ -306,7 +309,7 @@ func (c *client) readLoop() {
 				wfc := cp.wfc
 				cp.wfc = 0
 
-				cp.nc.SetWriteDeadline(time.Now().Add(s.opts.WriteDeadline))
+				cp.nc.SetWriteDeadline(time.Now().Add(opts.WriteDeadline))
 				err := cp.bw.Flush()
 				cp.nc.SetWriteDeadline(time.Time{})
 				if err != nil {
@@ -500,7 +503,7 @@ func (c *client) authTimeout() {
 }
 
 func (c *client) authViolation() {
-	if c.srv != nil && c.srv.opts.Users != nil {
+	if c.srv != nil && c.srv.getOpts().Users != nil {
 		c.Errorf("%s - User %q",
 			ErrAuthorization.Error(),
 			c.opts.Username)
@@ -529,7 +532,7 @@ func (c *client) sendProto(info []byte, doFlush bool) error {
 	if c.bw != nil && c.nc != nil {
 		deadlineSet := false
 		if doFlush || c.bw.Available() < len(info) {
-			c.nc.SetWriteDeadline(time.Now().Add(c.srv.opts.WriteDeadline))
+			c.nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
 			deadlineSet = true
 		}
 		_, err = c.bw.Write(info)
@@ -951,7 +954,7 @@ func (c *client) deliverMsg(sub *subscription, mh, msg []byte) {
 	deadlineSet := false
 	if client.bw.Available() < (len(mh) + len(msg)) {
 		client.wfc++
-		client.nc.SetWriteDeadline(time.Now().Add(client.srv.opts.WriteDeadline))
+		client.nc.SetWriteDeadline(time.Now().Add(client.srv.getOpts().WriteDeadline))
 		deadlineSet = true
 	}
 
@@ -1202,7 +1205,7 @@ func (c *client) processPingTimer() {
 
 	// Check for violation
 	c.pout++
-	if c.pout > c.srv.opts.MaxPingsOut {
+	if c.pout > c.srv.getOpts().MaxPingsOut {
 		c.Debugf("Stale Client Connection - Closing")
 		c.sendProto([]byte(fmt.Sprintf("-ERR '%s'\r\n", "Stale Connection")), true)
 		c.clearConnection()
@@ -1226,7 +1229,7 @@ func (c *client) setPingTimer() {
 	if c.srv == nil {
 		return
 	}
-	d := c.srv.opts.PingInterval
+	d := c.srv.getOpts().PingInterval
 	c.ptmr = time.AfterFunc(d, c.processPingTimer)
 }
 
@@ -1269,7 +1272,7 @@ func (c *client) clearConnection() {
 	// With TLS, Close() is sending an alert (that is doing a write).
 	// Need to set a deadline otherwise the server could block there
 	// if the peer is not reading from socket.
-	c.nc.SetWriteDeadline(time.Now().Add(c.srv.opts.WriteDeadline))
+	c.nc.SetWriteDeadline(time.Now().Add(c.srv.getOpts().WriteDeadline))
 	if c.bw != nil {
 		c.bw.Flush()
 	}
@@ -1350,13 +1353,13 @@ func (c *client) closeConnection() {
 		}
 
 		if rid != "" && srv.remotes[rid] != nil {
-			Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
+			c.srv.Debugf("Not attempting reconnect for solicited route, already connected to \"%s\"", rid)
 			return
 		} else if rid == srv.info.ID {
-			Debugf("Detected route to self, ignoring \"%s\"", rurl)
+			c.srv.Debugf("Detected route to self, ignoring \"%s\"", rurl)
 			return
 		} else if rtype != Implicit || retryImplicit {
-			Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
+			c.srv.Debugf("Attempting reconnect for solicited route \"%s\"", rurl)
 			// Keep track of this go-routine so we can wait for it on
 			// server shutdown.
 			srv.startGoRoutine(func() { srv.reConnectToRoute(rurl, rtype) })
@@ -1368,20 +1371,20 @@ func (c *client) closeConnection() {
 
 func (c *client) Errorf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Errorf(format, v...)
+	c.srv.Errorf(format, v...)
 }
 
 func (c *client) Debugf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Debugf(format, v...)
+	c.srv.Debugf(format, v...)
 }
 
 func (c *client) Noticef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Noticef(format, v...)
+	c.srv.Noticef(format, v...)
 }
 
 func (c *client) Tracef(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
-	Tracef(format, v...)
+	c.srv.Tracef(format, v...)
 }

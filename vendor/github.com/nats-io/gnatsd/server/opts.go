@@ -33,6 +33,7 @@ type ClusterOpts struct {
 
 // Options block for gnatsd server.
 type Options struct {
+	ConfigFile     string        `json:"-"`
 	Host           string        `json:"addr"`
 	Port           int           `json:"port"`
 	Trace          bool          `json:"-"`
@@ -69,6 +70,31 @@ type Options struct {
 	TLSCaCert      string        `json:"-"`
 	TLSConfig      *tls.Config   `json:"-"`
 	WriteDeadline  time.Duration `json:"-"`
+}
+
+// Clone performs a deep copy of the Options struct, returning a new clone
+// with all values copied.
+func (o *Options) Clone() *Options {
+	if o == nil {
+		return nil
+	}
+	clone := &Options{}
+	*clone = *o
+	if o.Users != nil {
+		clone.Users = make([]*User, len(o.Users))
+		for i, user := range o.Users {
+			clone.Users[i] = user.clone()
+		}
+	}
+	if o.Routes != nil {
+		clone.Routes = make([]*url.URL, len(o.Routes))
+		for i, route := range o.Routes {
+			routeCopy := &url.URL{}
+			*routeCopy = *route
+			clone.Routes[i] = routeCopy
+		}
+	}
+	return clone
 }
 
 // Configuration file authorization section.
@@ -123,7 +149,7 @@ Available cipher suites include:
 // ProcessConfigFile processes a configuration file.
 // FIXME(dlc): Hacky
 func ProcessConfigFile(configFile string) (*Options, error) {
-	opts := &Options{}
+	opts := &Options{ConfigFile: configFile}
 
 	if configFile == "" {
 		return opts, nil
@@ -736,15 +762,21 @@ func RemoveSelfReference(clusterPort int, routes []*url.URL) ([]*url.URL, error)
 	var cleanRoutes []*url.URL
 	cport := strconv.Itoa(clusterPort)
 
-	selfIPs := getInterfaceIPs()
+	selfIPs, err := getInterfaceIPs()
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range routes {
 		host, port, err := net.SplitHostPort(r.Host)
 		if err != nil {
 			return nil, err
 		}
 
-		if cport == port && isIPInList(selfIPs, getURLIP(host)) {
-			Noticef("Self referencing IP found: ", r)
+		ipList, err := getURLIP(host)
+		if err != nil {
+			return nil, err
+		}
+		if cport == port && isIPInList(selfIPs, ipList) {
 			continue
 		}
 		cleanRoutes = append(cleanRoutes, r)
@@ -764,19 +796,18 @@ func isIPInList(list1 []net.IP, list2 []net.IP) bool {
 	return false
 }
 
-func getURLIP(ipStr string) []net.IP {
+func getURLIP(ipStr string) ([]net.IP, error) {
 	ipList := []net.IP{}
 
 	ip := net.ParseIP(ipStr)
 	if ip != nil {
 		ipList = append(ipList, ip)
-		return ipList
+		return ipList, nil
 	}
 
 	hostAddr, err := net.LookupHost(ipStr)
 	if err != nil {
-		Errorf("Error looking up host with route hostname: %v", err)
-		return ipList
+		return nil, fmt.Errorf("Error looking up host with route hostname: %v", err)
 	}
 	for _, addr := range hostAddr {
 		ip = net.ParseIP(addr)
@@ -784,16 +815,15 @@ func getURLIP(ipStr string) []net.IP {
 			ipList = append(ipList, ip)
 		}
 	}
-	return ipList
+	return ipList, nil
 }
 
-func getInterfaceIPs() []net.IP {
+func getInterfaceIPs() ([]net.IP, error) {
 	var localIPs []net.IP
 
 	interfaceAddr, err := net.InterfaceAddrs()
 	if err != nil {
-		Errorf("Error getting self referencing address: %v", err)
-		return localIPs
+		return nil, fmt.Errorf("Error getting self referencing address: %v", err)
 	}
 
 	for i := 0; i < len(interfaceAddr); i++ {
@@ -801,10 +831,10 @@ func getInterfaceIPs() []net.IP {
 		if net.ParseIP(interfaceIP.String()) != nil {
 			localIPs = append(localIPs, interfaceIP)
 		} else {
-			Errorf("Error parsing self referencing address: %v", err)
+			return nil, fmt.Errorf("Error parsing self referencing address: %v", err)
 		}
 	}
-	return localIPs
+	return localIPs, nil
 }
 
 func processOptions(opts *Options) {
